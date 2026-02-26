@@ -1,0 +1,26 @@
+/* Sidebar panel (left navigation) */
+#sidebar {
+    background-color: #1E0001 !important;  
+}
+
+#sidebar h2{
+    background-color: #B44446 !important;  
+}
+
+
+/* Headings inside main content */
+#content h1,
+#content h2,
+#content h3 {
+    color: #893241 !important; 
+}
+
+/* Optional: links in main content */
+#content a {
+    color: #ffffff !important; 
+}
+
+
+#content {
+  background-color: #DFD9D8  !important;  
+}
