@@ -1,0 +1,796 @@
+---
+title: "Genomic Drivers of Survival in Luminal A and B Breast Cancer"
+author: "mp2242@ice.cam.ac.uk"
+output:
+  rmdformats::readthedown:
+    css: https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/refs/heads/main/File_setup/styles.css
+    theme: readable
+bibliography: https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/refs/heads/main/File_setup/references.bib
+csl: https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/refs/heads/main/File_setup/vancouver.csl
+
+---
+
+
+```{r setup, include=FALSE}
+#===============================================================================
+# SETUP AND PACKAGE MANAGEMENT
+#===============================================================================
+
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+# Suppress package startup messages
+suppressPackageStartupMessages({
+
+  # CRAN packages
+  cran_packages <- c(
+    "tidyverse", "knitr", "DT", "skimr", "data.table", 
+    "ggplot2", "survival", "survminer", "broom", "gtsummary", "R.utils"
+  )
+
+  # Bioconductor packages
+  bioc_packages <- c("limma", "maftools")
+
+  # Install missing CRAN packages
+  for(pkg in cran_packages){
+    if(!require(pkg, character.only = TRUE, quietly = TRUE)){
+      install.packages(pkg, repos = "http://cran.us.r-project.org")
+      library(pkg, character.only = TRUE)
+    }
+  }
+
+  # Install Bioconductor manager if missing
+  if(!requireNamespace("BiocManager", quietly = TRUE)){
+    install.packages("BiocManager")
+  }
+
+  # Install missing Bioconductor packages
+  for(pkg in bioc_packages){
+    if(!require(pkg, character.only = TRUE, quietly = TRUE)){
+      BiocManager::install(pkg, ask = FALSE)
+      library(pkg, character.only = TRUE)
+    }
+  }
+
+})
+
+# Set global paths (UPDATE THESE FOR GITHUB)
+
+clinical_path <-  "https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/refs/heads/main/Uncompressed_data/metabric_data_clinical_patient.csv"
+
+maf_path <- "https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/refs/heads/main/Uncompressed_data/metabric_data_mutations.maf"
+
+# Paths to the gzipped CSVs
+expression_file1 <- "https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/refs/heads/main/Compressed_expression_data/metabric_expression_part1.gz"
+expression_file2 <- "https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/refs/heads/main/Compressed_expression_data/metabric_expression_part2.gz"
+
+# Read the gzipped CSVs
+data1 <- fread(expression_file1)
+data2 <- fread(expression_file2)
+
+# Combine row-wise
+expression_path <- rbind(data1, data2)
+
+
+```
+# Coversheet
+
+![mod3_covsheet-1](https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/main/Coversheet/mod3_covsheet-1.png)
+![mod3_covsheet-2](https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/main/Coversheet/mod3_covsheet-2.png)
+
+![mod3_covsheet-3](https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/main/Coversheet/mod3_covsheet-3.png)
+![mod3_covsheet-4](https://raw.githubusercontent.com/MalPatel21/TP53_PIK3CA_Breast_Cancer_Analysis/main/Coversheet/mod3_covsheet-4.png)
+
+# Abstract 
+Breast cancer (BC) is a heterogeneous disease with variable prognosis. Molecular subtyping using PAM50 distinguishes Luminal A (LumA) and Luminal B (LumB) tumours, which differ in proliferation, receptor expression, and clinical outcomes. Somatic mutations, particularly in TP53 and PIK3CA, may influence subtype-specific survival.
+Data from 1,157 Luminal breast cancer patients in the METABRIC cohort were analysed. Differential gene expression between LumA and LumB was assessed using limma, followed by principal component analysis. Mutation frequencies of TP53 and PIK3CA were compared across subtypes, and tumour mutation burden (TMB) was calculated. Overall survival was evaluated using Kaplan-Meier analysis and Cox proportional hazards models, adjusting for clinical covariates.
+LumB tumours exhibited higher expression of proliferation-associated genes (e.g., CCNA2, BUB1, UBE2C) and partially distinct transcriptional profiles. TP53 mutations were enriched in LumB tumours (111 vs. 80 in LumA), while PIK3CA mutations were more frequent in LumA (387 vs. 159 in LumB). TMB did not differ significantly between subtypes (median 0.1, p = 0.072). Survival analysis revealed that TP53 mutations were associated with poorer outcomes, with TP53-mutated LumA tumours showing unexpectedly low survival. PIK3CA mutations were not independently associated with survival. Multivariable Cox regression confirmed that LumB subtype and TP53 mutation were independently linked to higher hazard of death.
+TP53 and PIK3CA mutation patterns differ between Luminal subtypes, with TP53 mutations identifying a high-risk subgroup within otherwise favorable LumA tumours. Integrating mutation status with molecular subtype can improve prognostic stratification and inform personalised management in luminal breast cancer. Future research should explore additional driver mutations and co-mutation effects to refine survival prediction models.
+
+
+
+# Introduction
+Among women globally, breast cancer (BC) remains the most frequently diagnosed cancer [@sung2021global]. As of 2020, approximately 2.3 million new cases were reported worldwide, accounting for 6.9% of cancer-related deaths[@xu2021global;@sung2021global]. One of the defining characteristics of BC is its heterogeneity, with tumors exhibiting substantial biological and clinical diversity that influences disease progression, treatment response, and prognosis[@nci_tumor_heterogeneity;@popa2025breast]. 
+
+One approach to classify the heterogeneous nature of breast cancer is to use a molecular subtyping technique such as Prediction Analysis of Microarray 50 (PAM50)[@parker2009supervised].  PAM50 is a 50-gene classifier that stratifies BC based on gene expression patterns (intrinsic subtypes): Luminal A (LumA), Luminal B (LumB), human epidermal growth factor receptor 2 (HER2)-enriched, Basal-like, and Normal-like [@perou2000molecular;@parker2009supervised;@cancer2012comprehensive; @kensler2019pam50]. This analysis focuses on LumA and LumB since LumA accounts for 50-60% of all breast cancers and LumB contributes 15-20% [@yersal2014biological]. LumA is a slow-progressing BC and is characterised by its high expression of progesterone receptors (PR), estrogen receptors (ER), and low proliferation-related genes. In comparison, LumB is more aggressive in development and is distinguished by lower PR and ER expression and high gene expression linked to cell cycle, proliferation, and growth factor receptors[@HENRY20201560;@dai2015breast;@prat2015clinical;@ades2014luminal;@sinberger2025refining]. Since PAM50 subtypes are defined using gene expression, reflecting underlying biological differences, it is broadly used in clinical/research settings, making it appropriate for analysis.
+
+While subtyping by gene expression captures important biological distinctions between BC subtypes, these expression patterns are frequently influenced by genomic alterations such as somatic mutations. Such mutations impact various genes, including those involved with tumor suppression, oncogenesis, and DNA repair. Tumor protein-53 (TP53) and PIK3CA are among the most frequently mutated genes in breast cancer[@miles2025somatic;@kostecka2022high]. TP53 is a tumor-suppressing gene that controls cell division and growth, and safeguards cells from genomic alterations induced by DNA damage by inhibiting proliferation or triggering programmed cell death (apoptosis)[@olivier2010tp53;@blondeaux2023germline]. The PIK3CA gene regulates cell growth and survival via signalling pathways, and mutations in this gene can enhance growth signals, contributing to uncontrolled cell proliferation in cancer[@zhao2008class].
+
+To explore these relationships, this study utilises data from the Molecular Taxonomy of Breast Cancer International Consortium (METABRIC), which comprises comprehensive genomic, transcriptomic, and clinical outcome data from breast tumours [@curtis2012genomic].  Overall survival was selected as the primary outcome because it provides a clinically meaningful measure of prognosis, allowing the potential impact of genomic alterations and mutation patterns to be assessed in relation to patient survival. Accordingly, this study examines how TP53 and PIK3CA mutation patterns vary across LumA and LumB in METABRIC and how these mutations relate to overall survival. Through this exploratory analysis, the aim is to better understand how genomic alterations interact with molecular subtype and clinically relevant characteristics in breast cancer.
+
+# Method
+
+## Data Sources
+
+Data for this study were obtained from a curated subset of the METABRIC cohort. The dataset was accessed via the cBioPortal for Cancer Genomics, and the version used here consisted of cleaned and simplified clinical, mutation, and gene expression data.
+
+### Clinical Data
+
+The clinical dataset comprised information from 2,509 primary breast cancer patients and included demographic variables, treatment information (chemotherapy, hormone therapy, and radiotherapy), receptor status indicators, molecular subtype classifications (PAM50 and integrative clustering), and overall survival outcomes. Numeric variables included age at diagnosis and overall survival time in months.
+
+|Column Name      | Description                                                           |Measurement                                                 |       
+|-----------------|-----------------------------------------------------------------------|------------------------------------------------------------|
+|patient_id       | Unique identifier for each individual                                 |                                                            |
+|age_at_diagnosis | Individual’s age  at diagnosis                                        |Years                                                       |
+|sex              | Individuals Gender                                                    |Female, Male                                                |
+|menopausal_state | Menopausal status at diagnosis                                        |Pre, Post, Peri, Unknown                                    |
+|er_status_ihc    | Estrogen receptor (ER) status evaluated by immunohistochemistry (IHC) |Positive, Negative, Unknown                                 |       
+|her2_status_snp6 | HER2 (ERBB2) amplification status inferred from SNP6 copy-number data |Amplified, Not Amplified, Unknown                           |
+|chemotherapy     | If patient received chemotherapy                                      |Yes, No, Unknown                                            |
+|hormone_therapy  | If patient received endocrine (hormone) therapy                       |Yes, No, Unknown                                            |
+|radiotherapy     | If patient received radiotherapy                                      |Yes, No, Unknown                                            |
+|pam50_subtype    | Breast cancer subtype based on PAM50 gene expression classifier       |Luminal A, Luminal B, HER2-enriched, Basal-like, Normal-like|
+|intclust_subtype | METABRIC integrative cluster (IntClust)                               |IntClust 1–IntClust 10 (sometimes 1–10)                     |
+|os_months        | Overall survival time                                                 |Months                                                      |
+|os_status        | Overall survival event indicator                                      |Deceased, Living                                            |
+
+### Gene Expression
+
+Normalised gene expression data, containing z-scored Illumina microarray data from the METABRIC cohort, included 20,603 genes across 1,981 tumour samples. Duplicate gene symbols arising from multiple probes mapping to the same gene were addressed during preprocessing.
+
+### Mutation Data 
+
+Mutation data were obtained from the METABRIC cohort in Mutation Annotation Format (MAF). This dataset contains annotated tumour sequencing variants across 2,369 samples, including information on mutation classifications (e.g., missense, nonsense, splice-site, and frameshift mutations) and gene-level mutation summaries.
+
+
+## Preprocessing
+
+### Clinical Data Preprocessing
+
+Clinical data from the METABRIC cohort were imported into R for preprocessing. An initial exploratory inspection was conducted to evaluate dataset dimensions and variable completeness, informing subsequent data-cleansing steps. Missing values were recoded as NA, and rows with missing data were excluded from analysis due to the extent of missingness. The dataset was restricted to LumA and LumB breast cancer subtypes to enable subtype-specific comparisons.
+
+Following these steps, 1,157 samples remained from the initial 2,509 (1,352 rows removed). Relevant categorical clinical variables—including treatment indicators, menopausal status, HER2 status, survival status, and molecular subtype classifications—were converted to factor variables for appropriate statistical analysis. Descriptive summaries were generated to verify that preprocessing steps were applied correctly and that the cleaned dataset was suitable for analysis.
+
+### Gene Expression Data Preprocessing
+
+Tab-delimited gene expression data were imported into R. Based on the Hugo_Symbol annotation, 199 duplicate gene symbols were identified, attributable to multiple probes per gene. These probes were collapsed to a single representative expression value using the median across probes[@chou2013gene]. After collapsing duplicate probes, 20,385 gene entries remained from the initial 20,603.
+
+The resulting dataset was converted into a matrix and transposed so that rows represented patients and columns represented genes. Patient identifiers were aligned between the gene expression and clinical datasets using unique patient IDs to assign PAM50 subtype annotations. Of 1,980 expression samples, 1,157 were successfully linked to clinical subtype data, while 823 samples lacking subtype information were excluded to ensure consistency between clinical and transcriptomic datasets for downstream analyses.
+
+### Mutation Data Preprocessing
+
+Following quality control assessment of the mutation data using the maftools package in R, clinical annotation data were processed to extract PAM50 molecular subtypes, which were subsequently merged with the mutation data using sample identifiers to enable subtype-specific analyses. The complete mutation dataset was then stratified based on PAM50 subtypes using the subsetMaf() function, creating two distinct MAF objects representing LumA and LumB tumours for comparative genomic analysis between these clinically relevant breast cancer subtypes.
+
+
+## Analysis
+
+### Gene Expression Analysis
+
+Differential expression analysis between LumB and LumA subtypes was performed using limma. LumA was set as the reference level, and linear models were fitted to gene expression values, followed by empirical Bayes moderation [@bjorklund2022subtype; @ritchie2015limma]. Limma was selected due to its empirical Bayes moderation, which improves variance estimation in high-dimensional microarray data with relatively small sample sizes, increasing statistical power while controlling false discovery rates. P-values were adjusted for multiple testing using the Benjamini–Hochberg method [@yoav1995controlling;@bjorklund2022subtype]. Genes with adjusted p-values < 0.05 were considered significantly differentially expressed [@ritchie2015limma]. Only seven rows with missing expression values were identified; these samples were removed, and zero-variance genes were filtered out before PCA.
+
+### Principal Component Analysis (PCA)
+
+Performing PCA on the full expression matrix was considered; however, restricting to significant genes enhanced interpretability by focusing on subtype-driven biological variation rather than global background noise. PCA was performed after centering and scaling the data, and patients were plotted along the first two principal components, coloured by subtype, with 95% confidence ellipses to illustrate clustering.
+
+### Mutation Analysis
+Subtype-Specific Mutation Patterns
+
+Mutation data were stratified by subtype to create separate MAF objects for LumA and LumB patients. Subtype-specific mutation frequencies were compared using the mafCompare function to identify genes with statistically significant differences. Genes with p-values below 0.05 were considered to differ between subtypes.
+
+### Tumour Mutation Burden
+
+Tumour mutation burden (TMB), defined as the number of mutations per megabase of coding DNA, was calculated for each patient. TMB was calculated using maftools default coding region length assumptions, enabling standardised comparison across samples. TMB distributions were compared between subtypes using a Wilcoxon rank-sum test and visualised using boxplots.
+
+## Survival Analysis
+
+### Kaplan-Meier Analysis
+
+Overall survival was analysed using Kaplan-Meier estimates, stratified by subtype. Survival time was defined as months from diagnosis to death or last follow-up, with deceased patients coded as events.
+
+### Cox Proportional Hazards Regression
+
+Multivariable Cox regression was performed to examine the effects of molecular features (TP53 and PIK3CA mutation status) on survival while adjusting for clinical covariates such as age at diagnosis, chemotherapy, and hormone therapy. Hazard ratios (HR) and 95% confidence intervals were calculated, and forest plots were generated for visualisation.
+
+# Results
+
+## Cohort Characteristics
+
+The final analytical dataset included 1,157 patients with Luminal breast cancer subtypes: 690 LumA (59.6%) and 467 LumB (40.4%). Patients with LumB tumours were slightly older on average (mean 65.3 years vs. 62.7) and more frequently postmenopausal (89.3% vs. 81.7%). Treatment followed similar patterns across subtypes: hormone therapy and radiotherapy were more common in patients of both subtypes, whereas chemotherapy was least frequent. However, LumB had a larger proportion of individuals receiving treatments across all therapies. HER2 positivity was higher in LumB (25.5% vs. 10.6%), while ER positivity was nearly universal across both subtypes (>97%). These characteristics suggest that LumB tumours present with a more aggressive clinical phenotype and are treated more intensively, consistent with prior literature.
+
+```{r Clinical_Data_Preprocessing, echo=FALSE}
+#===============================================================================
+# CLINICAL DATA PROCESSING
+#===============================================================================
+
+# Load clinical data
+clinical_raw <- fread(clinical_path)
+
+# Record initial sample count
+initial_samples <- nrow(clinical_raw)
+
+# Data cleaning steps - all in one pipe chain
+clinical_clean <- clinical_raw %>%
+  # Convert empty strings to NA
+  mutate(across(where(is.character), ~na_if(.x, ""))) %>%
+  # Standardize ER status first (before removing NAs)
+  mutate(
+    er_status_ihc = case_when(
+      tolower(er_status_ihc) %in% c("positive", "positve", "pos") ~ "Positive",
+      tolower(er_status_ihc) %in% c("negative", "neg") ~ "Negative",
+      TRUE ~ er_status_ihc  # Keep as is if no match
+    )
+  ) %>%
+  # Remove rows with missing essential data
+  drop_na() %>%
+  # Filter for Luminal subtypes
+  filter(pam50_subtype %in% c("LumA", "LumB")) %>%
+  # Convert categorical variables to factors
+  mutate(across(
+    c(pam50_subtype, chemotherapy, hormone_therapy,
+      radiotherapy, menopausal_state, her2_status_snp6,
+      os_status, intclust_subtype, er_status_ihc),  # Added er_status_ihc here
+    as.factor
+  ))
+
+# Calculate removal statistics
+final_samples <- nrow(clinical_clean)
+removed_samples <- initial_samples - final_samples
+
+
+
+# Create cohort table
+cohort_table <- clinical_clean %>%
+  group_by(pam50_subtype) %>%
+  summarise(
+    N = n(),
+    # Age statistics
+    Age_mean = round(mean(age_at_diagnosis, na.rm = TRUE), 1),
+    Age_sd = round(sd(age_at_diagnosis, na.rm = TRUE), 1),
+    Age_median = median(age_at_diagnosis, na.rm = TRUE),
+    Age_Q1_Q3 = paste0(round(quantile(age_at_diagnosis, 0.25, na.rm = TRUE), 1),
+                       " - ",
+                       round(quantile(age_at_diagnosis, 0.75, na.rm = TRUE), 1)),
+    
+    # Menopausal status
+    PreMenopausal_n = sum(menopausal_state == "Pre", na.rm = TRUE),
+    PreMenopausal_pct = paste0(round(100 * sum(menopausal_state == "Pre", na.rm = TRUE) / n(), 1), "%"),
+    PostMenopausal_n = sum(menopausal_state == "Post", na.rm = TRUE),
+    PostMenopausal_pct = paste0(round(100 * sum(menopausal_state == "Post", na.rm = TRUE) / n(), 1), "%"),
+    
+    # Treatments
+    Chemotherapy_yes = sum(chemotherapy == "YES", na.rm = TRUE),
+    Chemotherapy_pct = paste0(round(100 * sum(chemotherapy == "YES", na.rm = TRUE) / n(), 1), "%"),
+    HormoneTherapy_yes = sum(hormone_therapy == "YES", na.rm = TRUE),
+    HormoneTherapy_pct = paste0(round(100 * sum(hormone_therapy == "YES", na.rm = TRUE) / n(), 1), "%"),
+    Radiotherapy_yes = sum(radiotherapy == "YES", na.rm = TRUE),
+    Radiotherapy_pct = paste0(round(100 * sum(radiotherapy == "YES", na.rm = TRUE) / n(), 1), "%"),
+    
+    # HER2 status
+    HER2_positive = sum(her2_status_snp6 == "GAIN", na.rm = TRUE),
+    HER2_pct = paste0(round(100 * sum(her2_status_snp6 == "GAIN", na.rm = TRUE) / n(), 1), "%"),
+    
+    # ER status
+    ERstatus_pos = sum(er_status_ihc == "Positive", na.rm = TRUE),
+    ERstatus_pct = paste0(round(100 * sum(er_status_ihc == "Positive", na.rm = TRUE) / n(), 1), "%")
+  ) %>%
+  select(pam50_subtype, N, starts_with("Age"), 
+         PreMenopausal_n, PreMenopausal_pct, PostMenopausal_n, PostMenopausal_pct,
+         Chemotherapy_yes, Chemotherapy_pct, HormoneTherapy_yes, HormoneTherapy_pct,
+         Radiotherapy_yes, Radiotherapy_pct, HER2_positive, HER2_pct,
+         ERstatus_pos, ERstatus_pct)
+
+# Display table
+knitr::kable(cohort_table, caption = "Table 1: Clinical and pathological characteristics of LumA (n = 690) and LumB (n = 467) patients included in the final analytical cohort.")
+```
+
+```{r Gene_Expression_Data_Preprocessing, echo=FALSE}
+#===============================================================================
+# GENE EXPRESSION DATA PROCESSING
+#===============================================================================
+
+# Load expression data
+expression_raw <- expression_path
+
+# Check for duplicate genes
+dup_genes_before <- expression_raw[, .N, by = Hugo_Symbol][N > 1]
+
+# Collapse duplicate genes using median expression
+expression_collapsed <- expression_raw[
+  , lapply(.SD, median, na.rm = TRUE),
+  by = Hugo_Symbol,
+  .SDcols = colnames(expression_raw)[-1]
+]
+
+# Create expression matrix (genes as rows, patients as columns)
+expression_matrix <- as.matrix(expression_collapsed[, -1, with = FALSE])
+rownames(expression_matrix) <- expression_collapsed$Hugo_Symbol
+
+# Transpose for analysis (patients as rows)
+expression_t <- t(expression_matrix)
+
+# Match with clinical data
+patient_ids <- rownames(expression_t)
+matched_subtypes <- clinical_clean$pam50_subtype[
+  match(patient_ids, clinical_clean$patient_id)
+]
+
+# Remove unmatched samples
+keep_samples <- !is.na(matched_subtypes)
+expression_final <- expression_t[keep_samples, ]
+subtypes_final <- droplevels(factor(matched_subtypes[keep_samples]))
+```
+
+```{r Mutation_Data_Preprocessing, echo=FALSE}
+#===============================================================================
+# MUTATION DATA PROCESSING
+#===============================================================================
+
+# Load MAF data
+metabric_maf <- read.maf(maf = maf_path, verbose = FALSE)
+
+# Extract sample-level summaries
+mutation_summary <- getSampleSummary(metabric_maf)
+gene_summary <- getGeneSummary(metabric_maf)
+```
+
+## Differential Gene Expression between Luminal Subtypes
+
+Using the preprocessed gene expression dataset (20,385 genes after probe collapsing), differential expression analysis identified a subset of genes upregulated in LumB compared to LumA tumours (adjusted p-value < 0.05). The top 10 differentially expressed genes are summarised in Table 2. These included CCNA2, BUB1, CEP55, RACGAP1, CKAP2L, PTTG1, PTTG3P, CDKN3, UBE2C, and CENPA, all of which exhibited positive log2 fold-change values, indicating higher expression in the LumB subtype.
+
+**Table 2:** Top 10 genes significantly upregulated in Luminal B compared to LumA (adjusted p-value < 0.05), ranked by moderated t-statistic. Positive log2 fold-change (logFC) values indicate higher expression in Luminal B tumours.
+```{r Differential_Gene_Expression_Analysis, echo=FALSE}
+#===============================================================================
+# DIFFERENTIAL EXPRESSION ANALYSIS
+#===============================================================================
+
+# Set reference level
+subtypes_final <- relevel(subtypes_final, ref = "LumA")
+
+# Create design matrix
+design <- model.matrix(~ subtypes_final)
+colnames(design) <- c("Intercept", "LumB_vs_LumA")
+
+# Fit linear model
+fit <- lmFit(t(expression_final), design)
+fit <- eBayes(fit)
+
+# Extract results
+de_results <- topTable(
+  fit,
+  coef = "LumB_vs_LumA",
+  number = Inf,
+  adjust.method = "BH"
+)
+
+# Count significant genes
+sig_genes <- de_results[de_results$adj.P.Val < 0.05, ]
+top_genes <- head(de_results, 10)
+
+# Format p-values in scientific notation
+top10_formatted <- top_genes %>%
+  mutate(
+    P.Value = format(P.Value, scientific = TRUE),
+    adj.P.Val = format(adj.P.Val, scientific = TRUE)
+  )
+
+# Create nicely formatted table
+knitr::kable(
+  top10_formatted,
+  caption = "Table 2: Top 10 Differentially Expressed Genes between Luminal A and Luminal B",
+  digits = 3
+)
+```
+
+## Principal Component Analysis of Gene Expression
+
+To assess global transcriptional differences between the subtypes, principal component analysis (PCA) was performed using the significant genes identified above. The first two principal components captured 16.4% of the total variance (PC1: 9.7%, PC2: 6.7%). As shown in Figure 1, while the confidence ellipses for LumA and LumB tumours overlap—reflecting their shared luminal biology—a partial separation along the first principal component is observed, consistent with distinct transcriptional programmes between the subtypes.
+
+**Figure 1:** PCA of Luminal A and Luminal B tumours using significantly differentially expressed genes. PC1 and PC2 explain 9.7% and 6.7% of total variance, respectively. Points represent individual tumours, with ellipses indicating 95% confidence regions for each subtype.
+```{r pca_plot, echo=FALSE, message=FALSE, warning=FALSE}
+#===============================================================================
+# PCA VISUALIZATION
+#===============================================================================
+
+# Get significant genes from DE analysis
+sig_gene_names <- rownames(sig_genes)
+
+# Subset expression matrix to significant genes
+expression_pca_raw <- expression_final[, colnames(expression_final) %in% sig_gene_names]
+
+# QC Step 1: Check for and remove samples with missing values
+samples_with_na <- apply(expression_pca_raw, 1, function(x) any(is.na(x)))
+
+
+if(sum(samples_with_na) > 0) {
+  expression_pca_clean <- expression_pca_raw[!samples_with_na, ]
+  subtypes_pca <- subtypes_final[!samples_with_na]
+} else {
+  expression_pca_clean <- expression_pca_raw
+  subtypes_pca <- subtypes_final
+}
+
+# QC Step 2: Remove genes with zero variance
+gene_variance <- apply(expression_pca_clean, 2, var, na.rm = TRUE)
+genes_zero_var <- names(gene_variance[gene_variance == 0 | is.na(gene_variance)])
+
+if(length(genes_zero_var) > 0) {
+  expression_pca_clean <- expression_pca_clean[, !colnames(expression_pca_clean) %in% genes_zero_var]
+}
+
+# QC Step 3: Final check for any remaining NA/Inf values
+final_check <- sum(is.na(expression_pca_clean))
+
+
+if(final_check > 0) {
+  # If any NAs remain, use na.omit as last resort
+  expression_pca_clean <- na.omit(expression_pca_clean)
+}
+
+# Run PCA
+pca_result <- prcomp(expression_pca_clean, center = TRUE, scale. = TRUE)
+
+# Create plot dataframe
+pca_df <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Subtype = subtypes_pca
+)
+
+# Calculate variance explained
+var_explained <- summary(pca_result)$importance[2, 1:2] * 100
+
+# Generate PCA plot
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = Subtype)) +
+  geom_point(alpha = 0.7, size = 2) +
+  stat_ellipse(level = 0.95) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Principal Component Analysis of Luminal Breast Cancer Subtypes",
+    subtitle = paste0("Based on ", ncol(expression_pca_clean), " significantly DE genes"),
+    x = sprintf("PC1 (%.1f%%)", var_explained[1]),
+    y = sprintf("PC2 (%.1f%%)", var_explained[2]),
+    caption = "Figure 1: PCA of Luminal A and B breast cancer tumors based on significantly differentially expressed genes",
+    color = "PAM50 Subtype"
+  ) +
+  scale_color_manual(values = c("LumA" = "#D45C6E", "LumB" = "#9FD45C")) +
+  theme(legend.position = "bottom")
+
+```
+
+## Subtype-Specific Mutation Analysis
+
+Mutation analysis was conducted on 444 LumB and 661 LumA tumour samples to identify differences in the prevalence of key somatic alterations. Among the evaluated genes, PIK3CA, TP53, and MAP3K1 showed strong differences in mutation frequency between subtypes (p < 0.001), with PIK3CA mutations more frequent in LumA tumours (387 vs. 159 in LumB), while TP53 mutations were more frequent in LumB tumours (111 vs. 80 in LumA). CBFB and DNAH11 displayed moderate importance (p < 0.01), and the remaining genes—including AKAP9, PPP2R2A, USP28, LAMB3, GATA3, DTWD2, and ARID1A—were marginally important (p < 0.05).
+
+Odds ratio (OR) analysis supported these trends, with values greater than 1 indicating higher mutation frequency in LumA tumours, and values less than 1 indicating higher frequency in LumB tumours. Despite subtype-specific differences in individual gene mutations, tumour mutation burden (TMB) was comparable between groups. Median TMB values were 0.1 mutations per megabase in both LumA and LumB tumours (mean 0.111 vs. 0.108, respectively). As shown in Figure 3, the boxplots demonstrate nearly identical interquartile ranges and substantial overlap in overall distribution between subtypes. Although LumB tumours exhibited a slightly greater number of high-value outliers, the central tendency and spread were highly similar. Consistent with this visual pattern, the difference in TMB between LumA and LumB tumours did not reach statistical significance (Wilcoxon rank-sum test, p = 0.072), suggesting that global mutation burden does not substantially distinguish these luminal subtypes.
+
+**Figure 2:** Forest plot comparing mutation frequencies between Luminal A (n = 661) and Luminal B (n = 444) tumours. Odds ratios (OR) with 95% confidence intervals are shown; OR > 1 indicates higher mutation frequency in LumA, and OR < 1 indicates higher frequency in LumB. Significant differences (p < 0.05) highlight enrichment of PIK3CA in LumA and TP53 in LumB tumours.
+```{r Mutation_analysis, echo=FALSE, message=FALSE, warning=FALSE}
+############################################################
+# MUTATION ANALYSIS BY SUBTYPE
+############################################################
+
+# Add subtype info to MAF clinical data
+clinical_sub <- clinical_clean %>%
+  select(patient_id, pam50_subtype) %>%
+  rename(Subtype = pam50_subtype)
+
+metabric_maf@clinical.data <- merge(
+  metabric_maf@clinical.data,
+  clinical_sub,
+  by.x = "Tumor_Sample_Barcode",
+  by.y = "patient_id",
+  all.x = TRUE
+)
+
+# Subset MAF objects for LumA and LumB
+invisible(capture.output({
+  suppressMessages({
+    suppressWarnings({
+      maf_LumA <- subsetMaf(metabric_maf, clinQuery = "Subtype == 'LumA'")
+      maf_LumB <- subsetMaf(metabric_maf, clinQuery = "Subtype == 'LumB'")
+    })
+  })
+}, file = nullfile()))
+
+# Compare mutation frequencies between subtypes
+invisible(capture.output({
+  suppressMessages({
+    suppressWarnings({
+      maf_compare <- mafCompare(
+        m1 = maf_LumA,
+        m2 = maf_LumB,
+        m1Name = "LumA",
+        m2Name = "LumB"
+      )
+    })
+  })
+}, file = nullfile()))
+
+# Forest plot 
+forestPlot(maf_compare, pVal = 0.05)
+
+```
+
+**Figure 3:** Distribution of tumour mutation burden (mutations per megabase) in LumA and LumB tumours. Boxplots show median and interquartile range, with individual outliers displayed. TMB distributions are highly similar between subtypes (Wilcoxon p = 0.072).
+
+```{r Tumor_mutation_burden_analysis, echo=FALSE}
+# Temporarily disable graphics
+pdf(NULL)  # Start null graphics device
+invisible(capture.output({
+  suppressMessages({
+    suppressWarnings({
+      tmb_LumA <- tmb(maf_LumA)
+      tmb_LumB <- tmb(maf_LumB)
+    })
+  })
+}, file = nullfile()))
+invisible(dev.off())  # Close null device silently
+
+# Perform statistical test
+tmb_test <- wilcox.test(tmb_LumA$total_perMB, tmb_LumB$total_perMB)
+
+boxplot(
+  tmb_LumA$total_perMB, tmb_LumB$total_perMB,
+  names = c("LumA", "LumB"),
+  main = "Figure 3: Tumor Mutation Burden by Subtype",
+  col = c("#D45C6E", "#9FD45C"),
+  ylab = "Mutations per MB",
+  ylim = c(0, 0.52)
+)
+
+# Add p-value
+text(1.5, 0.45, paste("p =", format(tmb_test$p.value, digits = 3)))
+```
+
+## Kaplan–Meier Survival Analysis
+
+In the TP53-stratified survival analysis (Figure 4), LumA tumours harbouring TP53 mutations demonstrated the poorest overall survival, with the survival curve consistently remaining below all other groups throughout follow-up. LumB TP53-mutant tumours also showed reduced survival relative to wild-type counterparts, though their survival probability remained higher than that observed in LumA TP53-mutant tumours. Wild-type groups in both subtypes exhibited comparatively improved survival.
+
+Similarly, in the PIK3CA-stratified analysis (Figure 5), LumA tumours with PIK3CA mutations demonstrated the lowest survival probability across the observed time period. Although differences between groups were less pronounced than in the TP53 analysis, the LumA mutant group remained the bottom-most survival curve, while wild-type groups showed comparatively better outcomes.
+
+**Figure 4:** Kaplan–Meier overall survival curves stratified by TP53 mutation status within LumA and LumB subtypes. Curves represent wild-type (WT) and mutant (Mut) groups for each subtype, with numbers at risk shown below the plot. Differences between groups were statistically significant (log-rank test, p < 0.0001).
+
+
+```{r Survival_analysis, echo=FALSE, fig.height = 7, fig.width = 9}
+#===============================================================================
+# SURVIVAL ANALYSIS
+#===============================================================================
+
+# Extract mutation status for key genes - capture and discard output
+invisible(capture.output({
+  suppressMessages({
+    suppressWarnings({
+      tp53_mutated <- subsetMaf(metabric_maf, genes = "TP53")@variants.per.sample$Tumor_Sample_Barcode
+      pik3ca_mutated <- subsetMaf(metabric_maf, genes = "PIK3CA")@variants.per.sample$Tumor_Sample_Barcode
+    })
+  })
+}, file = nullfile()))
+
+# Create integrated clinical dataset
+clinical_integrated <- clinical_clean %>%
+  mutate(
+    TP53_status = ifelse(patient_id %in% tp53_mutated, "Mutated", "Wild-type"),
+    PIK3CA_status = ifelse(patient_id %in% pik3ca_mutated, "Mutated", "Wild-type"),
+    os_event = ifelse(grepl("DECEASED", os_status), 1, 0)
+  )
+
+# Create survival object
+surv_object <- Surv(
+  time = clinical_integrated$os_months,
+  event = clinical_integrated$os_event
+)
+clinical_integrated$group <- interaction(
+  clinical_integrated$pam50_subtype,
+  clinical_integrated$TP53_status
+)
+
+fit_integrated <- survfit(surv_object ~ group, data = clinical_integrated)
+
+ggsurvplot(
+  fit_integrated,
+  data = clinical_integrated,
+  pval = TRUE,
+  risk.table = TRUE,
+  risk.table.height = 0.35,
+  risk.table.y.text.col = TRUE,  # color the group labels
+  risk.table.y.text = TRUE,      # show group names
+  title = "Survival: Impact of TP53 Mutations within Luminal Subtypes",
+  legend.labs = c("Lum A WT", "Lum A Mut", "Lum B WT", "Lum B Mut"),
+  palette = c("#D45C6E", "#F19AA5", "#83c73c", "#acb58d"),
+  caption = "Figure 4: Survival Impact of TP53 Mutations within Luminal Subtypes"
+
+)
+
+```
+
+**Figure 5:** Kaplan–Meier overall survival curves stratified by PIK3CA mutation status within Luminal A and Luminal B subtypes. Wild-type (WT) and mutant (Mut) groups are shown for each subtype, with corresponding numbers at risk displayed beneath the plot. Survival differences across groups were statistically significant (log-rank test, p < 0.0001).
+
+
+```{r Survival_analysis_PIK3CA, echo=FALSE, message=FALSE, warning=FALSE, fig.height = 7, fig.width = 9}
+#===============================================================================
+# SURVIVAL ANALYSIS: PIK3CA within Luminal Subtypes
+#===============================================================================
+
+# Create combined group: Luminal subtype × PIK3CA status
+clinical_integrated$group_pik3ca <- interaction(
+  clinical_integrated$pam50_subtype,
+  clinical_integrated$PIK3CA_status
+)
+
+# Levels will be like: LumA.Wild-type, LumA.Mutated, LumB.Wild-type, LumB.Mutated
+levels(clinical_integrated$group_pik3ca) <- c("Lum A WT", "Lum A Mut", "Lum B WT", "Lum B Mut")
+
+# Fit survival model
+fit_pik3ca <- survfit(surv_object ~ group_pik3ca, data = clinical_integrated)
+
+# Plot survival curves
+ggsurvplot(
+  fit_pik3ca,
+  data = clinical_integrated,
+  pval = TRUE,
+  risk.table = TRUE,
+  risk.table.y.text.col = TRUE,  # color the group labels
+  risk.table.y.text = TRUE,      # show group names
+  risk.table.height = 0.35,      # bigger table for readability
+  title = "Overall Survival by Luminal Subtype and PIK3CA Status",
+  legend.labs = c("Lum A WT", "Lum A Mut", "Lum B WT", "Lum B Mut"),
+  palette = c("#D45C6E", "#F19AA5", "#83c73c", "#acb58d"),  # consistent color scheme
+  caption = "Figure 5: Survival Impact of PIK3CA Mutations within Luminal Subtypes"
+)
+
+
+```
+
+## Cox Proportional Hazards Regression Analysis
+
+### Unadjusted Model
+
+In the unadjusted Cox proportional hazards model, LumB subtype was significantly associated with worse overall survival compared to LumA (HR = 1.59, 95% CI: 1.36–1.86, p < 0.001).
+
+TP53 wild-type status was associated with improved survival relative to TP53-mutant tumours (HR = 0.76, 95% CI: 0.63–0.93, p = 0.007).
+
+PIK3CA wild-type status was not strongly associated with survival (HR = 0.88, 95% CI: 0.75–1.02, p = 0.095).
+
+### Adjusted Model
+
+After adjusting for molecular subtype and treatment variables, LumB subtype remained independently associated with poorer survival (HR = 1.52, 95% CI: 1.30–1.78, p < 0.001).
+
+TP53 wild-type status also remained strongly associated with improved survival (HR = 0.79, 95% CI: 0.65–0.96, p = 0.016).
+
+PIK3CA wild-type status remained non-significant following adjustment (HR = 0.87, 95% CI: 0.74–1.01, p = 0.071).
+
+Among treatment variables, hormone therapy was strongly associated with survival (p < 0.001), whereas chemotherapy was not strongly associated with outcome (p = 0.271).
+
+```{r multivar_cox_regression, echo=FALSE}
+#===============================================================================
+# MULTIVARIABLE COX REGRESSION
+#===============================================================================
+# Unadjusted model
+cox_unadjusted <- coxph(
+  surv_object ~ pam50_subtype + TP53_status + PIK3CA_status,
+  data = clinical_integrated
+)
+
+# Adjusted model
+cox_adjusted <- coxph(
+  surv_object ~ pam50_subtype + TP53_status + PIK3CA_status +
+                 chemotherapy + hormone_therapy,
+  data = clinical_integrated
+)
+
+# Create nicely formatted tables
+tidy(cox_unadjusted, exponentiate = TRUE, conf.int = TRUE) |>
+  kable(digits = 4, caption = "Table 3: Unadjusted Cox proportional hazards model for overall survival.")
+
+tidy(cox_adjusted, exponentiate = TRUE, conf.int = TRUE) |>
+  kable(digits = 4, caption = "Table 4: Multivariable Cox proportional hazards model adjusting for subtype and treatment variables.
+")
+
+```
+## Discussion
+
+This study investigated differences in TP53 and PIK3CA mutation patterns between LumA and LumB tumours in METABRIC and examined how these mutations relate to overall survival. The analysis revealed that TP53 mutations were enriched in LumB tumours, whereas PIK3CA mutations were more frequent in Luminal A, although total mutation burden did not differ significantly between subtypes. Both mutations were associated with differential overall survival outcomes depending on subtype.
+
+Gene expression differences stratified by subtype were consistent with established biological characteristics in Luminal breast cancer tumours. PCA revealed noticeable clustering of LumA and LumB tumours, though the clusters overlapped, consistent with previous transcriptomic analyses demonstrating shared expression patterns between luminal subtypes [@prat2015clinical;@prat2013prognostic;@perou2000molecular]. The partial separation indicates meaningful biological variation that differentiates these subtypes[@sorlie2001gene; @cheang2009ki67;@hu2006molecular; @perou1999distinctive]. Differentially expressed genes in LumB, including CCNA2, BUB1, and UBE2C, are key regulators of mitosis and the cell cycle, reflecting the higher proliferative activity typical of LumB tumours. This aligns with prior studies linking elevated proliferation signatures to poorer prognosis in LumB breast cancers, emphasising that molecular profiling can aid in differentiating between BC tumour types and understanding their molecular drivers[@ncbi_gene_ccna2;@ncbi_datasets_bub1;@ncbi_datasets_pik3ca].
+
+There was evident subtype-specific enrichment in mutation patterns from the METABRIC cohort. TP53 mutations were observed more frequently in LumB tumours, consistent with prior genomic characterisations of breast cancer subtypes, which report higher TP53 mutation rates in more proliferative luminal and basal-like tumours, supporting the biological aggressiveness observed in LumB disease [@sorlie2004molecular;@dumay2013distinct]. Conversely, PIK3CA mutations were enriched in LumA tumours, reflecting their prevalence in less aggressive, hormone receptor-positive disease, as reported in prior genomic analyses [@clevelandclinic_luminalA;@cancer2012comprehensive;@nixon2019pik3ca]. Additional subtype-specific patterns included enrichment of MAP3K1 and CBFB mutations in Luminal A, and DNAH11, AKAP9, and USP28 mutations in LumB. According to our data, PPP2R2A mutations were observed in a small number of LumA cases, contrary to previous studies indicating higher prevalence in LumB. In this analysis, no PPP2R2A mutations were observed in LumB, warranting careful interpretation. Overall, the similar TMB between LumA and B tumours (median 0.1, p = 0.072) suggests that global mutation load does not account for the observed survival differences, reinforcing the role of specific driver mutations such as TP53 and PIK3CA in defining prognostic outcomes.
+
+Kaplan–Meier analysis revealed important survival differences between Luminal subtypes and mutation-defined groups (log-rank p < 0.0001). Multivariable Cox regression demonstrated that LumB subtype was independently associated with higher hazard of death relative to LumA when averaged across mutation groups (HR = 1.52). Additionally, stratified survival curves revealed notable heterogeneity across subtypes. Interestingly, the Kaplan–Meier curves show that TP53-mutated LumA tumours consistently have the lowest survival probability, visually below even LumB mutated tumours. This highlights that the presence of TP53 mutation may identify a high-risk subgroup within otherwise favourable LumA disease, suggesting that the adverse prognostic impact of TP53 mutation may be especially pronounced within LumA disease, challenging the perception of LumA as uniformly favourable. Nevertheless, formal interaction testing was not performed, and subgroup sample size differences may contribute to visual variability. In contrast, PIK3CA mutation status did not confer a substantial survival disadvantage, with KM curves showing only modest separation between groups, consistent with the lack of independent association in multivariable Cox regression.
+
+Limitations of this study include the representativeness of the METABRIC cohort, which primarily comprises patients from the UK and Canada, potentially limiting generalisability to more diverse populations. Another limitation is that this study focused solely on TP53 and PIK3CA; other genomic alterations could impact survival but were not included. Furthermore, small mutation counts in some subgroups, particularly TP53 mutations in Luminal A, may reduce the stability of estimates. Future research could include other driver mutations or copy number variations beyond TP53 and PIK3CA, examine co-mutation patterns between TP53 and PIK3CA and their combined effect on survival, and incorporate additional patient characteristics, such as menopausal status.
+
+## Conclusion
+
+This study aimed to investigate how TP53 and PIK3CA mutation patterns differ between LumA and LumB breast cancers in METABRIC and how these mutations relate to overall survival. Our analysis revealed that TP53 mutations were enriched in LumB tumours and associated with a higher risk of death, while PIK3CA mutations were more common in LumA tumours but did not independently influence survival. Notably, TP53 mutations in LumA tumours identified a subgroup with unexpectedly poor prognosis, demonstrating that mutation status can provide additional prognostic insight beyond molecular subtype alone. These findings emphasise that integrating genomic alterations with subtype classification can improve risk stratification and inform personalised management strategies in luminal breast cancer. Future studies should explore additional driver mutations and co-mutation patterns to further refine prognostic models and support clinical decision-making.  
+
+# Supplementary
+```{r supplementary_outputs, echo=  FALSE}
+
+
+# CLINICAL DATA PROCESSING
+# Display processing summary
+cat("\n=== Clinical Data Processing Summary ===\n")
+cat("Initial samples:", initial_samples, "\n")
+cat("Final samples (LumA/LumB only):", final_samples, "\n")
+cat("Samples removed:", removed_samples, 
+    sprintf("(%.1f%%)", 100 * removed_samples/initial_samples), "\n")
+
+#===============================================================================
+# GENE EXPRESSION DATA PROCESSING
+#===============================================================================
+
+# Processing summary
+cat("\n=== Expression Data Processing Summary ===\n")
+cat("Duplicate genes before collapsing:", nrow(dup_genes_before), "\n")
+cat("Genes after collapsing:", nrow(expression_collapsed), "\n")
+cat("Samples matched to clinical data:", sum(keep_samples), "\n")
+cat("Samples removed (no subtype):", sum(!keep_samples), "\n")
+
+#===============================================================================
+# MUTATION DATA PROCESSING
+#===============================================================================
+cat("\n=== Mutation Data Summary ===\n")
+cat("Total samples with mutation data:", nrow(mutation_summary), "\n")
+cat("Total genes mutated:", nrow(gene_summary), "\n")
+cat("Median mutations per sample:", median(mutation_summary$total), "\n")
+
+
+#===============================================================================
+# DIFFERENTIAL EXPRESSION ANALYSIS
+#===============================================================================
+cat("\n=== Differential Expression Results ===\n")
+cat("Total genes analyzed:", nrow(de_results), "\n")
+cat("Significant genes (FDR < 0.05):", nrow(sig_genes), "\n")
+cat("Genes upregulated in LumB (logFC > 0):", 
+    sum(sig_genes$logFC > 0), "\n")
+cat("Genes downregulated in LumB (logFC < 0):", 
+    sum(sig_genes$logFC < 0), "\n")
+
+#===============================================================================
+# PCA VISUALIZATION
+#===============================================================================
+cat("Samples with missing values:", sum(samples_with_na), "\n")
+cat("Samples removed due to missing values:", sum(samples_with_na), "\n")
+cat("Remaining NA values after cleaning:", final_check, "\n")
+cat("Genes with zero variance removed:", length(genes_zero_var), "\n")
+cat("Remaining NA values after cleaning:", final_check, "\n")
+cat("Samples after na.omit:", nrow(expression_pca_clean), "\n")
+
+
+#===============================================================================
+# PCA VISUALIZATION
+#===============================================================================
+cat("Luminal A tumor mutation burden (median):",
+    median(tmb_LumA$total_perMB), "\n")
+
+cat("Luminal B tumor mutation burden (median):",
+    median(tmb_LumB$total_perMB), "\n")
+
+cat("Luminal A tumor mutation burden (mean):",
+    mean(tmb_LumA$total_perMB), "\n")
+
+cat("Luminal B tumor mutation burden (mean):",
+    mean(tmb_LumB$total_perMB), "\n")
+
+
+#===============================================================================
+#SUBTYPE & MUTATION COUNT
+#===============================================================================
+
+# Count patients by Luminal subtype and mutation status for TP53 and PIK3CA
+
+# TP53 counts
+tp53_counts <- clinical_integrated %>%
+  group_by(pam50_subtype, TP53_status) %>%
+  summarise(N = n(), .groups = "drop") %>%
+  arrange(pam50_subtype, TP53_status)
+
+# PIK3CA counts
+pik3ca_counts <- clinical_integrated %>%
+  group_by(pam50_subtype, PIK3CA_status) %>%
+  summarise(N = n(), .groups = "drop") %>%
+  arrange(pam50_subtype, PIK3CA_status)
+
+# Display results
+cat("=== TP53 Mutation Counts by Luminal Subtype ===\n")
+print(tp53_counts)
+
+cat("\n=== PIK3CA Mutation Counts by Luminal Subtype ===\n")
+print(pik3ca_counts)
+
+
+head(clinical_clean)
+```
+
+# References
+
